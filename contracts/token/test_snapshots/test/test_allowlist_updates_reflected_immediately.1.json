@@ -275,7 +275,7 @@
                         "key": {
                           "vec": [
                             {
-                              "symbol": "Metadata"
+                              "symbol": "AllowedMetadataKey"
                             },
                             {
                               "symbol": "twitter"
@@ -283,7 +283,19 @@
                           ]
                         },
                         "val": {
-                          "string": "@navin"
+                          "bool": true
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "AllowedMetadataKeys"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "vec": []
                         }
                       },
                       {
