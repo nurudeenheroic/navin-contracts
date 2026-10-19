@@ -120,6 +120,7 @@ fn test_debug_event_structure() {
     shipment.add_carrier(&admin, &carrier);
 
     let deadline = env.ledger().timestamp() + 86_400;
+    crate::test_utils::allow_carrier(&shipment, &company, &carrier);
     shipment.create_shipment(
         &company,
         &receiver,
@@ -193,6 +194,7 @@ fn test_e2e_happy_path_with_milestones_and_token_balances() {
 
     // ── Create shipment ───────────────────────────────────────────────────────
     let deadline = env.ledger().timestamp() + 86_400;
+    crate::test_utils::allow_carrier(&shipment, &company, &carrier);
     let shipment_id = shipment.create_shipment(
         &company,
         &receiver,
@@ -408,6 +410,7 @@ fn test_e2e_cancel_refund_path_with_token_balances() {
     assert_eq!(token.balance(&company), 5_000);
 
     let deadline = env.ledger().timestamp() + 86_400;
+    crate::test_utils::allow_carrier(&shipment, &company, &carrier);
     let shipment_id = shipment.create_shipment(
         &company,
         &receiver,
@@ -479,6 +482,66 @@ fn test_e2e_cancel_refund_path_with_token_balances() {
 // TEST 3 — PARTIAL MILESTONES THEN CANCEL VIA DEADLINE
 // =============================================================================
 #[test]
+fn test_e2e_cancel_shipment_returns_escrow_to_company() {
+    let (env, admin) = setup_env();
+
+    let company = Address::generate(&env);
+    let carrier = Address::generate(&env);
+    let receiver = Address::generate(&env);
+
+    let (token_id, token) = deploy_token(&env, &admin);
+    let shipment = deploy_shipment(&env, &admin, &token_id);
+
+    shipment.add_company(&admin, &company);
+    shipment.add_carrier(&admin, &carrier);
+
+    token.mint(&admin, &company, &5_000_i128);
+    let deadline = env.ledger().timestamp() + 86_400;
+    crate::test_utils::allow_carrier(&shipment, &company, &carrier);
+    let shipment_id = shipment.create_shipment(
+        &company,
+        &receiver,
+        &carrier,
+        &hash(&env, 0xB2),
+        &Vec::new(&env),
+        &deadline,
+    );
+
+    shipment.deposit_escrow(&company, &shipment_id, &2_000_i128);
+    assert_eq!(
+        token.balance(&company),
+        3_000,
+        "company has 3k after deposit"
+    );
+    assert_eq!(
+        token.balance(&shipment.address),
+        2_000,
+        "contract holds 2k before cancel"
+    );
+
+    shipment.cancel_shipment(&company, &shipment_id, &hash(&env, 0xB3));
+
+    assert!(
+        has_event(&env, "escrow_refunded"),
+        "cancel_shipment must emit escrow_refunded"
+    );
+    assert_eq!(
+        token.balance(&company),
+        5_000,
+        "company fully refunded after cancel"
+    );
+    assert_eq!(
+        token.balance(&shipment.address),
+        0,
+        "contract returns escrow to company"
+    );
+
+    let state = shipment.get_shipment(&shipment_id);
+    assert_eq!(state.status, ShipmentStatus::Cancelled);
+    assert_eq!(state.escrow_amount, 0);
+}
+
+#[test]
 fn test_e2e_partial_milestones_then_cancel_via_deadline() {
     let (env, admin) = setup_env();
 
@@ -502,6 +565,7 @@ fn test_e2e_partial_milestones_then_cancel_via_deadline() {
     milestones.push_back((Symbol::new(&env, "rest"), 50_u32));
 
     let deadline = env.ledger().timestamp() + 3_600;
+    crate::test_utils::allow_carrier(&shipment, &company, &carrier);
     let shipment_id = shipment.create_shipment(
         &company,
         &receiver,
@@ -592,9 +656,12 @@ fn test_e2e_partial_milestones_then_cancel_via_deadline() {
         deadline_topics,
         std::vec![
             "escrow_refunded".to_string(),
-            "shipment_expired".to_string()
+            "shipment_cancelled".to_string(),
+            "shipment_expired".to_string(),
+            "notification".to_string(),
+            "notification".to_string(),
         ],
-        "deadline expiry must emit refund before expired marker"
+        "deadline expiry must emit refund, cancellation, expired marker, and notifications"
     );
     assert!(
         has_event(&env, "shipment_expired"),
@@ -645,6 +712,7 @@ fn test_e2e_deadline_expiry_auto_cancel_and_refund() {
     assert_eq!(token.balance(&company), 3_000);
 
     let deadline = env.ledger().timestamp() + 3_600;
+    crate::test_utils::allow_carrier(&shipment, &company, &carrier);
     let shipment_id = shipment.create_shipment(
         &company,
         &receiver,
@@ -690,7 +758,10 @@ fn test_e2e_deadline_expiry_auto_cancel_and_refund() {
         deadline_topics,
         std::vec![
             "escrow_refunded".to_string(),
-            "shipment_expired".to_string()
+            "shipment_cancelled".to_string(),
+            "shipment_expired".to_string(),
+            "notification".to_string(),
+            "notification".to_string(),
         ],
         "deadline refund and expiry ordering must be deterministic"
     );
@@ -735,6 +806,7 @@ fn test_regression_milestone_release_event_ordering() {
 
     let mut milestones: Vec<(Symbol, u32)> = Vec::new(&env);
     milestones.push_back((Symbol::new(&env, "pickup"), 100_u32));
+    crate::test_utils::allow_carrier(&shipment, &company, &carrier);
 
     let shipment_id = shipment.create_shipment(
         &company,
@@ -788,6 +860,7 @@ fn test_regression_deadline_refund_event_ordering() {
     shipment.add_company(&admin, &company);
     shipment.add_carrier(&admin, &carrier);
     token.mint(&admin, &company, &2_000_i128);
+    crate::test_utils::allow_carrier(&shipment, &company, &carrier);
 
     let shipment_id = shipment.create_shipment(
         &company,
@@ -808,8 +881,11 @@ fn test_regression_deadline_refund_event_ordering() {
         topics,
         std::vec![
             "escrow_refunded".to_string(),
-            "shipment_expired".to_string()
+            "shipment_cancelled".to_string(),
+            "shipment_expired".to_string(),
+            "notification".to_string(),
+            "notification".to_string(),
         ],
-        "regression guard: refund must be emitted before shipment_expired"
+        "regression guard: refund must be emitted before shipment_cancelled and shipment_expired"
     );
 }
